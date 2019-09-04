@@ -1,5 +1,3 @@
-#![windows_subsystem = "windows"]
-
 use clap::{App, Arg};
 use failure::Error;
 use std::{
@@ -52,11 +50,9 @@ fn ensure_slot(path: &Path) -> Result<PathBuf, Error> {
     Ok(slots)
 }
 
-fn move_save_files(from: &Path, to: &Path) -> Result<(), Error> {
-    for save_file in list_save_files(&to)? {
-        println!("delete: {}", save_file.display());
-        fs::remove_file(&save_file)?;
-    }
+/// Copy save files from `from`, to `to`, deleting any existing save files in `to` in the process.
+fn copy_save_files(from: &Path, to: &Path) -> Result<(), Error> {
+    delete_save_files(&to)?;
 
     for save_file in list_save_files(&from)? {
         if let Some(file_name) = save_file.file_name() {
@@ -64,6 +60,34 @@ fn move_save_files(from: &Path, to: &Path) -> Result<(), Error> {
             println!("{} -> {}", save_file.display(), dest.display());
             fs::copy(save_file, &dest)?;
         }
+    }
+
+    Ok(())
+}
+
+/// Find the nth newest slot.
+fn find_newest_slot(profile: &Path, nth: usize) -> Result<Option<PathBuf>, Error> {
+    let slots = ensure_slot(&profile)?;
+    let slots = find_matching(&slots, |p| p.is_dir(), |_| true)?;
+
+    let mut slots_and_meta = slots
+        .into_iter()
+        .map(|s| {
+            let meta = fs::metadata(&s)?;
+            Ok((s, meta.modified()?))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    slots_and_meta.sort_by(|a, b| b.1.cmp(&a.1));
+
+    Ok(slots_and_meta.get(nth).map(|n| n.0.clone()))
+}
+
+/// Delete save files in the given path.
+fn delete_save_files(path: &Path) -> Result<(), Error> {
+    for save_file in list_save_files(path)? {
+        println!("delete: {}", save_file.display());
+        fs::remove_file(&save_file)?;
     }
 
     Ok(())
@@ -100,6 +124,25 @@ fn main() -> Result<(), Error> {
                 .long("save-dated")
                 .help("Removes the current save files, and saves them in a dated folder."),
         )
+        .arg(
+            Arg::with_name("clear-profile")
+                .long("clear-profile")
+                .help("Removes the current save files."),
+        )
+        .arg(
+            Arg::with_name("load-nth-newest-slot")
+                .long("load-nth-newest-slot")
+                .value_name("nth")
+                .help("Load the nth newest slot.")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("delete-nth-newest-slot")
+                .long("delete-nth-newest-slot")
+                .value_name("nth")
+                .help("Delete the nth newest slot.")
+                .takes_value(true),
+        )
         .get_matches();
 
     let base = PathBuf::from(env::var("USERPROFILE")?)
@@ -133,7 +176,7 @@ fn main() -> Result<(), Error> {
                 fs::create_dir(&slot)?;
             }
 
-            move_save_files(profile, &slot)?;
+            copy_save_files(profile, &slot)?;
         }
 
         if let Some(slot) = matches.value_of("load") {
@@ -143,12 +186,12 @@ fn main() -> Result<(), Error> {
                 fs::create_dir(&slot)?;
             }
 
-            move_save_files(&slot, profile)?;
+            copy_save_files(&slot, profile)?;
         }
 
         if let Some(name) = matches.value_of("load-save-file") {
             if let Some(from) = list_name_contains(&profile.join("Save Files"), name)?.first() {
-                move_save_files(&from, profile)?;
+                copy_save_files(&from, profile)?;
             }
         }
 
@@ -161,11 +204,30 @@ fn main() -> Result<(), Error> {
                 fs::create_dir(&slot)?;
             }
 
-            move_save_files(profile, &slot)?;
+            copy_save_files(profile, &slot)?;
+        }
 
-            for save_file in list_save_files(&profile)? {
-                println!("delete: {}", save_file.display());
-                fs::remove_file(&save_file)?;
+        if matches.is_present("clear-profile") {
+            delete_save_files(&profile)?;
+        }
+
+        if let Some(nth) = matches.value_of("load-nth-newest-slot") {
+            let nth = str::parse::<usize>(nth)?;
+
+            if let Some(path) = find_newest_slot(&profile, nth)? {
+                copy_save_files(&path, &profile)?;
+            }
+        }
+
+        if let Some(nth) = matches.value_of("delete-nth-newest-slot") {
+            let nth = str::parse::<usize>(nth)?;
+
+            if let Some(path) = find_newest_slot(&profile, nth)? {
+                delete_save_files(&path)?;
+
+                if let Err(e) = fs::remove_dir(&path) {
+                    println!("Failed to remove directory: {}", e);
+                }
             }
         }
     }

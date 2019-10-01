@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use clap::{App, Arg};
 use failure::Error;
 use std::{
@@ -5,17 +7,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn list_save_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
+fn list_save_files(path: &Path) -> Result<Vec<(String, PathBuf)>, Error> {
     return find_matching(path, |p| p.is_file(), |n| n.starts_with("SGTA"));
 }
 
 /// List files that contains the given name.
-fn list_name_contains(path: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
+fn list_name_contains(path: &Path, name: &str) -> Result<Vec<(String, PathBuf)>, Error> {
     return find_matching(path, |p| p.is_dir(), |n| n.contains(name));
 }
 
 /// Find files matching the given predicate.
-fn find_matching<P, F>(path: &Path, p: P, m: F) -> Result<Vec<PathBuf>, Error>
+fn find_matching<P, F>(path: &Path, p: P, m: F) -> Result<Vec<(String, PathBuf)>, Error>
 where
     P: Copy + Fn(&Path) -> bool,
     F: Copy + Fn(&str) -> bool,
@@ -26,13 +28,13 @@ where
         let entry = entry?;
         let path = entry.path();
 
-        if p(&path)
-            && path
-                .file_name()
-                .and_then(|n| n.to_str().map(m))
-                .unwrap_or(false)
-        {
-            out.push(path)
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        if p(&path) && m(&name) {
+            out.push((name, path))
         }
     }
 
@@ -54,7 +56,7 @@ fn ensure_slot(path: &Path) -> Result<PathBuf, Error> {
 fn copy_save_files(from: &Path, to: &Path) -> Result<(), Error> {
     delete_save_files(&to)?;
 
-    for save_file in list_save_files(&from)? {
+    for (_, save_file) in list_save_files(&from)? {
         if let Some(file_name) = save_file.file_name() {
             let dest = to.join(file_name);
             println!("{} -> {}", save_file.display(), dest.display());
@@ -73,8 +75,8 @@ fn find_newest_slot(profile: &Path, nth: usize) -> Result<Option<PathBuf>, Error
     let mut slots_and_meta = slots
         .into_iter()
         .map(|s| {
-            let meta = fs::metadata(&s)?;
-            Ok((s, meta.modified()?))
+            let meta = fs::metadata(&s.1)?;
+            Ok((s.1, meta.modified()?))
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -85,7 +87,7 @@ fn find_newest_slot(profile: &Path, nth: usize) -> Result<Option<PathBuf>, Error
 
 /// Delete save files in the given path.
 fn delete_save_files(path: &Path) -> Result<(), Error> {
-    for save_file in list_save_files(path)? {
+    for (_, save_file) in list_save_files(path)? {
         println!("delete: {}", save_file.display());
         fs::remove_file(&save_file)?;
     }
@@ -190,7 +192,10 @@ fn main() -> Result<(), Error> {
         }
 
         if let Some(name) = matches.value_of("load-save-file") {
-            if let Some(from) = list_name_contains(&profile.join("Save Files"), name)?.first() {
+            let mut matches = list_name_contains(&profile.join("Save Files"), name)?;
+            matches.sort_by(|a, b| b.0.cmp(&a.0));
+
+            if let Some((_, from)) = matches.first() {
                 copy_save_files(&from, profile)?;
             }
         }
